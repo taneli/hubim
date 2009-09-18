@@ -6,6 +6,8 @@ import email, email.Utils
 import socket
 import time
 import xml.etree.cElementTree as ET
+from email.header import decode_header
+import codecs
 
 CONFIG = {
 	'IMAPSERVER': "imap." + ".".join(socket.getfqdn().split(".")[1:]),
@@ -34,7 +36,10 @@ def gethdrs(fieldspec):
 	"""Get IMAP headers according to fieldspec, which must follow
 	RFC 3501 SEARCH specification."""
 	retval = list()
-	mbox = imaplib.IMAP4(CONFIG['IMAPSERVER'])
+	if CONFIG['IMAPSERVER'].endswith('/ssl'):
+		mbox = imaplib.IMAP4_SSL(CONFIG['IMAPSERVER'][:-4])
+	else:
+		mbox = imaplib.IMAP4(CONFIG['IMAPSERVER'])
 	mbox.login(CONFIG['IMAPUSERNAME'], CONFIG['IMAPPASSWORD'])
 	mbox.select(CONFIG['FOLDERNAME'], True)
 	typ, nums = mbox.search(None, fieldspec)
@@ -47,12 +52,23 @@ def gethdrs(fieldspec):
 	mbox.logout()
 	return retval
 
+def qp_to_utf8(s, quirks = True):
+	if quirks:
+		s = s.replace("\x0d\x0a", "")
+		#s = s.replace("=?iso-8859-", "=?ISO-8859-")
+		#s = s.replace("=?utf-8", "=?UTF-8")
+	(msg, codec) = decode_header(s)[0]
+	if codec == None:
+		return unicode(msg)
+	de = codecs.getdecoder(codec)
+	return de(msg)[0]
+
 def generate_feed(feed, hdrs):
 	unordered = dict()
 	for hdr in hdrs:
 		phdr = email.message_from_string(hdr[1])
 		elem = ET.Element("entry")
-		ET.SubElement(elem, "title").text = phdr['Subject']
+		ET.SubElement(elem, "title").text = qp_to_utf8(phdr['Subject'])
 		
 	# <link href="imap://server/INBOX;UID" rel="alternate"/>
 		link = ET.SubElement(elem, "link")
@@ -69,7 +85,7 @@ def generate_feed(feed, hdrs):
 	# <author><name>name</name><email>email</email></author>
 		author = ET.SubElement(elem, "author")
 		name, addr = email.Utils.getaddresses([phdr['From']])[0]
-		ET.SubElement(author, "name").text = name
+		ET.SubElement(author, "name").text = qp_to_utf8(name)
 		ET.SubElement(author, "email").text = addr
 		unordered[long(time.strftime("%s", date))] = elem
 	ordered = sort(unordered.keys())
@@ -80,15 +96,17 @@ def generate_feed(feed, hdrs):
 def do_work():
 	datespec = time.strftime("%d-%b-%Y", time.gmtime(time.mktime(time.gmtime()) - long(CONFIG['DAYS']) * 86400))
 	feed = ET.Element("feed")
-	feed.attrib['version'] = "0.3"
-	feed.attrib['xmlns'] = "http://purl.org/atom/ns#"
-	ET.SubElement(feed, "title").text = "IMAP %s@%s" % (CONFIG['IMAPUSERNAME'], CONFIG['IMAPSERVER'])
+	feed.attrib['xmlns'] = "http://www.w3.org/2005/Atom"
+	title = ET.SubElement(feed, "title")
+	title.text = "IMAP %s@%s" % (CONFIG['IMAPUSERNAME'], CONFIG['IMAPSERVER'])
+	title.attrib['type'] = "text"
 	ET.SubElement(feed, "updated").text = "%s" % (time.strftime("%Y-%m-%dT%H:%M:%SZ"))
 	link = ET.SubElement(feed, "link")
 	link.attrib['rel'] = "alternate"
 	link.attrib['href'] = "imap://%s/%s" % (CONFIG['IMAPSERVER'], CONFIG['FOLDERNAME'])
 	generate_feed(feed, gethdrs("(SINCE %s)" % datespec))
-	file(CONFIG['OUTPUTFILE'], "w").write(ET.tostring(feed))
+	xml = """<?xml version="1.0" encoding="utf-8"?>\n"""
+	file(CONFIG['OUTPUTFILE'], "w").write(xml + ET.tostring(feed))
 
 if __name__ == "__main__":
 	import sys
